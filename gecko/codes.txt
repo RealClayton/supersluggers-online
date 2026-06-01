@@ -1,0 +1,60 @@
+# Mario Super Sluggers (RMBE01) Gecko Code & Memory Hooking Guide
+
+This folder contains references and raw Gecko codes developed to intercept game state transitions.
+
+## 1. Wii/GameCube Memory Architecture (MEM1)
+Wii MEM1 resides at raw virtual address space `0x80000000` to `0x817FFFFF`. All executable code (`main.dol` code sections) and dynamic game loop memory variables are allocated here.
+
+## 2. Common Gecko Code Formats for Netplay State Interception
+
+### A. Direct 32-Bit Write (04 Code Type)
+Directly writes a new value to RAM at every frame boundary.
+```
+Format: 04XXXXXX YYYYYYYY
+* XXXXXX: Virtual offset (relative to 0x80000000)
+* YYYYYYYY: 32-bit value to write
+```
+*Use Case:* Disabling random field events or locking game modes for testing.
+
+### B. Hook Inject / Branch and Insert (C2 Code Type)
+Replaces the instruction at a specific target address with a branch to a custom block of PowerPC assembly code, executes the assembly, and returns to the game loop.
+```
+Format:
+C2XXXXXX NNNNNNNN
+ZZZZZZZZ ZZZZZZZZ
+...
+```
+*   `XXXXXX`: Target hook offset (relative to 0x80000000).
+*   `NNNNNNNN`: Number of 64-bit blocks of custom assembly instructions that follow.
+*   `ZZZZZZZZ ZZZZZZZZ`: Custom PowerPC assembly machine code.
+
+---
+
+## 3. Dynamic Host Authority Hooks Target Addresses
+
+To synchronize the netplay state, our Dolphin custom netplay thread needs to know when players transition between gameplay phases. We will write assembly hooks to trigger writes to a custom "netplay register" address (e.g., `0x80002F00`, a safe scratch space in memory).
+
+### Hook A: Pitcher Wind-Up Hook
+*   **Target State:** The frame the pitcher starts their wind-up animation.
+*   **Search Strategy:** Search for changing integers representing character animation indexes when a pitch is initiated (usually a float animation track or an integer state machine variable).
+*   **Gecko Logic:** Intercept the state update function in `main.dol` and write the current possession ID to our custom netplay register.
+
+### Hook B: Batter Swing Hook
+*   **Target State:** The frame the batter triggers a swing, passing the check threshold.
+*   **Search Strategy:** Monitor swing acceleration values or swing progress floats.
+*   **Gecko Logic:** Capture the precise analog swing force/speed and place it in the memory buffer before standard Bluetooth latency can degrade the swing timing.
+
+### Hook C: Ball-in-Play Hook
+*   **Target State:** The exact millisecond the ball contacts the bat.
+*   **Search Strategy:** Scan for variables related to ball physics (X/Y/Z velocity vectors changing instantly, or contact noise triggers).
+*   **Gecko Logic:** Set the Host Authority Register to `02` (Fielder Control) instantly.
+
+---
+
+## 4. How to Apply Custom Gecko Codes in Dolphin
+1. Open Dolphin Emulator.
+2. Right-click *Mario Super Sluggers (RMBE01)* -> Click **Properties**.
+3. Go to the **Gecko Codes** tab.
+4. Click **Add New Code**.
+5. Give it a name and paste the Gecko code blocks.
+6. Enable the checkbox.
