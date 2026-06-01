@@ -1,0 +1,41 @@
+# Game ROMs and Large Images
+*.wbfs
+*.iso
+*.gcm
+Mario Super Sluggers (USA) (En,Fr,Es)/
+
+# Extracted Game Data (large files)
+extracted_game/
+extracted_game/files/dt_na.dat
+
+# Tools and Local Binaries
+tools/
+*.tar.gz
+*.zip
+
+# OS Metadata
+.DS_Store
+._*
+Thumbs.db
+
+# Build Artifacts
+build/
+target/
+out/
+bin/
+*.o
+*.obj
+*.exe
+*.dylib
+*.so
+*.dll
+
+# IDE and Editor configs
+.vscode/
+.idea/
+*.suo
+*.user
+*.userossc
+*.sln
+*.vcxproj
+*.filters
