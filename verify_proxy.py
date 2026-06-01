@@ -75,9 +75,9 @@ def main():
     records = []
     
     # Binary layout: Pack alignment is 1 byte (#pragma pack(push, 1))
-    # format: < (little endian), Q (uint64), H (uint16), 3h (3*int16), 3h (3*int16), 2H (2*uint16)
-    # Total size: 8 + 2 + 6 + 6 + 4 = 26 bytes
-    struct_format = "<Q H 3h 3h 2H"
+    # format: < (little endian), Q (uint64), I (uint32), H (uint16), 3h (3*int16), 3h (3*int16), 2H (2*uint16)
+    # Total size: 8 + 4 + 2 + 6 + 6 + 4 = 30 bytes
+    struct_format = "<Q I H 3h 3h 2H"
     expected_size = struct.calcsize(struct_format)
 
     try:
@@ -89,10 +89,11 @@ def main():
                 # Unpack the binary packet
                 unpacked = struct.unpack(struct_format, data)
                 ts_us = unpacked[0]
-                buttons = unpacked[1]
-                accel = unpacked[2:5]
-                gyro = unpacked[5:8]
-                ir = unpacked[8:10]
+                seq = unpacked[1]
+                buttons = unpacked[2]
+                accel = unpacked[3:6]
+                gyro = unpacked[6:9]
+                ir = unpacked[9:11]
                 
                 timestamps.append(ts_us)
                 records.append({

@@ -33,6 +33,7 @@
 #pragma pack(push, 1)
 struct WiiRemoteReport {
     uint64_t timestamp_us;     // High-resolution timestamp in microseconds
+    uint32_t sequence;         // Monotonic packet sequence number for drop detection
     uint16_t buttons;          // Digital button states mask
     int16_t accel[3];          // Accelerometer x, y, z raw data (10-bit resolution)
     int16_t gyro[3];           // MotionPlus Gyroscope pitch, roll, yaw raw data (14-bit)
@@ -183,6 +184,7 @@ void ParseHIDReport(const unsigned char* buf, int bytes_read, WiiRemoteReport& r
  */
 void GenerateMockWiiRemoteReport(WiiRemoteReport& report, uint64_t frame) {
     report.buttons = 0x0000;
+    report.sequence = static_cast<uint32_t>(frame + 1); // 1-indexed sequence
     
     // Simulate swing / pitch motion values using sinusoidal time vectors
     double t = frame * 0.001; // 1ms polling steps

@@ -2,7 +2,7 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::path::PathBuf;
 use std::fs;
-use tauri::{State, Manager};
+use tauri::{State, Manager, Emitter};
 
 // Thread-safe state to manage active subprocesses
 struct ActiveSession {
@@ -162,12 +162,12 @@ fn launch_netplay_session(
     let app_clone = app.clone();
     std::thread::spawn(move || {
         // Sleep to yield CPU
-        std::thread::sleep(std::chrono::milliseconds(1000));
+        std::thread::sleep(std::time::Duration::from_millis(1000));
         
         let state_handle = app_clone.state::<AppState>();
         
         loop {
-            std::thread::sleep(std::chrono::milliseconds(500));
+            std::thread::sleep(std::time::Duration::from_millis(500));
             let mut s = state_handle.0.lock().unwrap();
             
             // Check if Dolphin has exited

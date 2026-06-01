@@ -19,6 +19,7 @@
 #pragma pack(push, 1)
 struct ProxyInputReport {
     uint64_t timestamp_us;     // High-resolution timestamp
+    uint32_t sequence;         // Monotonic packet sequence number for drop detection
     uint16_t buttons;          // Core buttons bitmask
     int16_t accel[3];          // 10-bit Accelerometer vectors
     int16_t gyro[3];           // 14-bit MotionPlus Gyroscope vectors
@@ -52,6 +53,10 @@ public:
     // Clear the buffer queue on game reset/load
     void Reset();
 
+    // Diagnostic accessors
+    uint32_t GetDroppedPacketCount() const { return m_dropped_packets; }
+    uint32_t GetOutOfOrderCount() const { return m_out_of_order_packets; }
+
 private:
     std::mutex m_mutex;
     std::vector<ProxyInputReport> m_queue;
@@ -61,6 +66,9 @@ private:
     ProxyInputReport m_second_last_report;
     
     uint64_t m_buffer_delay_us; // Dynamic target buffering delay based on network jitter
+    uint32_t m_expected_sequence;     // Next expected sequence number
+    uint32_t m_dropped_packets;      // Count of detected dropped packets
+    uint32_t m_out_of_order_packets; // Count of out-of-order arrivals
     
     // Interpolation Helpers
     ProxyInputReport InterpolateLinear(const ProxyInputReport& p1, const ProxyInputReport& p2, double t);

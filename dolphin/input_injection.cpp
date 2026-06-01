@@ -1,6 +1,7 @@
 #include "input_injection.h"
 #include <iostream>
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 
 #if !defined(_WIN32)
@@ -17,6 +18,9 @@
 
 AdaptiveJitterBuffer::AdaptiveJitterBuffer() {
     m_buffer_delay_us = 30000; // Default 30ms buffering delay (approx. 2 frames)
+    m_expected_sequence = 0;
+    m_dropped_packets = 0;
+    m_out_of_order_packets = 0;
     std::memset(&m_last_valid_report, 0, sizeof(ProxyInputReport));
     std::memset(&m_second_last_report, 0, sizeof(ProxyInputReport));
 }
@@ -32,7 +36,30 @@ void AdaptiveJitterBuffer::Reset() {
 
 void AdaptiveJitterBuffer::PushReport(const ProxyInputReport& report) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_queue.push_back(report);
+
+    // Track packet ordering and detect drops via sequence numbers
+    if (report.sequence > 0) { // Ignore uninitialized sequence fields
+        if (m_expected_sequence == 0) {
+            // First packet: calibrate the tracker
+            m_expected_sequence = report.sequence + 1;
+        } else if (report.sequence < m_expected_sequence) {
+            m_out_of_order_packets++;
+        } else if (report.sequence > m_expected_sequence) {
+            m_dropped_packets += (report.sequence - m_expected_sequence);
+            m_expected_sequence = report.sequence + 1;
+        } else {
+            // Exact match: report.sequence == m_expected_sequence
+            m_expected_sequence = report.sequence + 1;
+        }
+    }
+
+    // Sorted insertion: UDP does not guarantee ordering.
+    // Use binary search to find the correct chronological position.
+    auto it = std::lower_bound(m_queue.begin(), m_queue.end(), report,
+        [](const ProxyInputReport& a, const ProxyInputReport& b) {
+            return a.timestamp_us < b.timestamp_us;
+        });
+    m_queue.insert(it, report);
 
     // Keep queue trimmed to the last 500ms of reports to prevent memory leakage
     if (m_queue.size() > 500) {
@@ -140,13 +167,20 @@ EmulatedWiimoteState AdaptiveJitterBuffer::PullState(uint64_t current_time_us) {
         return state;
     }
 
-    // Find the framing reports surrounding the target playback time
+    // Binary search for the framing reports surrounding the target playback time (O(log n))
+    ProxyInputReport search_key;
+    search_key.timestamp_us = target_time;
+    auto upper = std::upper_bound(m_queue.begin(), m_queue.end(), search_key,
+        [](const ProxyInputReport& a, const ProxyInputReport& b) {
+            return a.timestamp_us < b.timestamp_us;
+        });
     size_t idx = 0;
-    for (size_t i = 0; i < m_queue.size() - 1; ++i) {
-        if (target_time >= m_queue[i].timestamp_us && target_time <= m_queue[i+1].timestamp_us) {
-            idx = i;
-            break;
-        }
+    if (upper != m_queue.begin()) {
+        idx = std::distance(m_queue.begin(), upper) - 1;
+    }
+    // Clamp to prevent out-of-bounds on idx+1 access
+    if (idx >= m_queue.size() - 1) {
+        idx = m_queue.size() - 2;
     }
 
     ProxyInputReport p1 = m_queue[idx];
