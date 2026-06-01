@@ -21,6 +21,7 @@ AdaptiveJitterBuffer::AdaptiveJitterBuffer() {
     m_expected_sequence = 0;
     m_dropped_packets = 0;
     m_out_of_order_packets = 0;
+    m_authority_bypass = false;
     std::memset(&m_last_valid_report, 0, sizeof(ProxyInputReport));
     std::memset(&m_second_last_report, 0, sizeof(ProxyInputReport));
 }
@@ -135,7 +136,10 @@ EmulatedWiimoteState AdaptiveJitterBuffer::PullState(uint64_t current_time_us) {
     }
 
     // Playback target time with adaptive jitter buffer delay offset
-    uint64_t target_time = current_time_us - m_buffer_delay_us;
+    uint64_t target_time = current_time_us;
+    if (!m_authority_bypass) {
+        target_time -= m_buffer_delay_us;
+    }
 
     // Boundary: Target is older than the oldest packet in queue (extreme latency shift)
     if (target_time <= m_queue.front().timestamp_us) {
@@ -163,7 +167,9 @@ EmulatedWiimoteState AdaptiveJitterBuffer::PullState(uint64_t current_time_us) {
         state.ir_pointer[1] = newest.ir_pointer[1] / 1023.0f;
         
         // Dynamically widen buffer size due to late packet detection (adaptation)
-        m_buffer_delay_us = std::min(m_buffer_delay_us + 1000, uint64_t(100000)); // Max 100ms
+        if (!m_authority_bypass) {
+            m_buffer_delay_us = std::min(m_buffer_delay_us + 1000, uint64_t(100000)); // Max 100ms
+        }
         return state;
     }
 
@@ -216,7 +222,7 @@ EmulatedWiimoteState AdaptiveJitterBuffer::PullState(uint64_t current_time_us) {
     InterpolateHermiteIR(p0, p1, p2, p3, t, state.ir_pointer);
 
     // Slowly shrink delay if network is stable (jitter decay)
-    if (m_buffer_delay_us > 20000) { // Keep floor of 20ms
+    if (!m_authority_bypass && m_buffer_delay_us > 20000) { // Keep floor of 20ms
         m_buffer_delay_us -= 1; // Sub-microsecond gradual recovery
     }
 
@@ -350,10 +356,17 @@ EmulatedWiimoteState NetplayInputReceiver::GetEmulatedState() {
     uint64_t current_time = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now().time_since_epoch()).count();
         
+    // Apply local authority bypass if we own this state frame (0ms latency!)
+    m_jitter_buffer.SetAuthorityBypass(m_authority_manager.HasLocalAuthority());
+        
     // Retrieve the jitter-buffered and interpolated controller input
     return m_jitter_buffer.PullState(current_time);
 }
 
 void NetplayInputReceiver::SyncGeckoState(uint8_t state_reg) {
     m_authority_manager.UpdateStateFromMemoryRegister(state_reg);
+}
+
+void NetplayInputReceiver::SetClientRole(bool is_offense) {
+    m_authority_manager.SetTeamRole(is_offense);
 }

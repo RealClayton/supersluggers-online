@@ -57,9 +57,13 @@ public:
     uint32_t GetDroppedPacketCount() const { return m_dropped_packets; }
     uint32_t GetOutOfOrderCount() const { return m_out_of_order_packets; }
 
+    // Allows the HostAuthorityManager to bypass jitter delay for 0ms local inputs
+    void SetAuthorityBypass(bool bypass) { m_authority_bypass = bypass; }
+
 private:
     std::mutex m_mutex;
     std::vector<ProxyInputReport> m_queue;
+    bool m_authority_bypass;
     
     // History trackers for Hermite spline interpolation
     ProxyInputReport m_last_valid_report;
@@ -99,6 +103,9 @@ public:
     
     // Returns current authority type
     NetplayAuthority GetAuthorityMode() const { return m_mode; }
+    
+    // Set whether this client represents the offensive team (batting/running)
+    void SetTeamRole(bool is_offense) { m_is_offense_team = is_offense; }
 
 private:
     NetplayAuthority m_mode;
@@ -121,6 +128,9 @@ public:
 
     // Updates memory register states from Gecko core hooks
     void SyncGeckoState(uint8_t state_reg);
+
+    // Update the client's team role
+    void SetClientRole(bool is_offense);
 
 private:
     NetplayInputReceiver();
