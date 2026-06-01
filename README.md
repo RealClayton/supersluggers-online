@@ -14,18 +14,18 @@ The netplay architecture is split into four distinct layers that cooperate in re
 
 ```mermaid
 graph TD
-    subgraph Client A (Pitching/Fielding Team)
+    subgraph Client_A ["Client A (Pitching/Fielding Team)"]
         A_Wiimote["Physical Wii Remote"] -->|Bluetooth 1000Hz| A_Proxy["Bluetooth Proxy (C++)"]
         A_Proxy -->|UDP Low Latency:5555| A_Dolphin["Custom Dolphin Fork"]
         A_Dolphin -->|Input Injection| A_Game["Mario Super Sluggers (main.dol)"]
         A_Game -->|Gecko State Hooks| A_Dolphin
     end
     
-    subgraph Network (UDP Netplay)
+    subgraph Network_Netplay ["Network (UDP Netplay)"]
         A_Dolphin <==>|Dynamic Netplay Protocol:5556| B_Dolphin["Custom Dolphin Fork"]
     end
     
-    subgraph Client B (Batting/Running Team)
+    subgraph Client_B ["Client B (Batting/Running Team)"]
         B_Wiimote["Physical Wii Remote"] -->|Bluetooth 1000Hz| B_Proxy["Bluetooth Proxy (C++)"]
         B_Proxy -->|UDP Low Latency:5555| B_Dolphin["Custom Dolphin Fork"]
         B_Dolphin -->|Input Injection| B_Game["Mario Super Sluggers (main.dol)"]

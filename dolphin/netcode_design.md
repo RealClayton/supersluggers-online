@@ -10,12 +10,12 @@ To inject the Bluetooth proxy's inputs and enforce dynamic host authority, we ho
 
 ```mermaid
 graph TD
-    subgraph Dolphin Emulator Core
+    subgraph Dolphin_Core ["Dolphin Emulator Core"]
         FrameLoop["Emulation Frame Loop (Core.cpp)"] -->|Ticks HW State| WiimoteHW["Wiimote Subsystem (Wiimote.cpp)"]
         RAMBus["RAM Memory Bus (Memory.cpp)"] -->|Gecko Write to 0x80002F00| HookRAM["Gecko Mem Hook"]
     end
     
-    subgraph Custom Netplay Fork Integration
+    subgraph Netplay_Fork ["Custom Netplay Fork Integration"]
         Receiver["NetplayInputReceiver (Single-Threaded)"] -->|Continuous Ingestion| JitterBuf["Adaptive Jitter Buffer"]
         HookRAM -->|Triggers State Sync| AuthMgr["HostAuthorityManager"]
         
