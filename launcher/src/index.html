@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mario Super Sluggers Online: Netplay Launcher</title>
+    <link rel="stylesheet" href="styles.css">
+    <script type="module" src="/main.js" defer></script>
+</head>
+<body>
+    <main class="dashboard" id="dashboard">
+        <header>
+            <div class="title-container">
+                <h1>Super Sluggers Online</h1>
+                <div class="subtitle">Custom Netplay Architecture</div>
+            </div>
+        </header>
+
+        <!-- System Daemon Status Grid -->
+        <section class="status-grid">
+            <div class="status-card" id="proxy-status-card">
+                <div class="status-indicator" id="proxy-indicator"></div>
+                <div class="status-info">
+                    <h3>Bluetooth HID Proxy</h3>
+                    <p id="proxy-status-text">Scanning system configuration...</p>
+                </div>
+            </div>
+            
+            <div class="status-card" id="dolphin-status-card">
+                <div class="status-indicator" id="dolphin-indicator"></div>
+                <div class="status-info">
+                    <h3>Dolphin Emulator Fork</h3>
+                    <p id="dolphin-status-text">Scanning system configuration...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Setup configurations form -->
+        <section class="setup-form">
+            <div class="input-group">
+                <label for="iso-path">Game ROM File Path (.wbfs / .iso)</label>
+                <input type="text" id="iso-path" placeholder="/path/to/Mario Super Sluggers.wbfs" value="/Volumes/Clay X10/02 - Coding Projects/supersluggers-online/Mario Super Sluggers (USA) (En,Fr,Es)/Mario Super Sluggers (USA) (En,Fr,Es).wbfs">
+            </div>
+
+            <div class="segmented-row">
+                <div class="input-group">
+                    <label>Dynamic Netplay Role Select</label>
+                    <div class="role-selector">
+                        <button type="button" class="role-btn active" id="role-defense">DEFENSE (Pitching)</button>
+                        <button type="button" class="role-btn" id="role-offense">OFFENSE (Batting)</button>
+                    </div>
+                </div>
+                
+                <div class="input-group">
+                    <label for="server-ip">Target Connection IP Address (WAN / Host)</label>
+                    <input type="text" id="server-ip" placeholder="127.0.0.1" value="127.0.0.1">
+                </div>
+            </div>
+
+            <div class="segmented-row">
+                <div class="input-group">
+                    <label for="dolphin-path">Custom Dolphin Emulator Path</label>
+                    <input type="text" id="dolphin-path" placeholder="/path/to/Dolphin" value="/Volumes/Clay X10/02 - Coding Projects/supersluggers-online/dolphin/Dolphin">
+                </div>
+                
+                <div class="input-group">
+                    <label for="proxy-path">High-Frequency Proxy Path</label>
+                    <input type="text" id="proxy-path" placeholder="/path/to/SluggersProxy" value="/Volumes/Clay X10/02 - Coding Projects/supersluggers-online/proxy/SluggersProxy">
+                </div>
+            </div>
+        </section>
+
+        <!-- Action launch area -->
+        <section class="launch-area">
+            <button class="btn-launch" id="btn-launch-action">Inject & Launch Playball</button>
+            
+            <!-- Live Active Session Console -->
+            <div class="console-area" id="log-console">
+                <div class="console-line">Ready to initialize netplay framework...</div>
+            </div>
+        </section>
+    </main>
+</body>
+</html>
