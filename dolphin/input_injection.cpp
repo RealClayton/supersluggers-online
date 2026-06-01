@@ -291,7 +291,11 @@ void NetplayInputReceiver::Stop() {
 void NetplayInputReceiver::ListeningLoop() {
     ProxyInputReport report;
     sockaddr_in sender_addr;
+#if defined(_WIN32)
     int sender_len = sizeof(sender_addr);
+#else
+    socklen_t sender_len = sizeof(sender_addr);
+#endif
 
     while (m_running) {
         int bytes_rec = recvfrom(m_socket, reinterpret_cast<char*>(&report), sizeof(report), 0,
