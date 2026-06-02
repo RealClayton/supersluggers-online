@@ -13,6 +13,8 @@ tools/*
 !tools/udp_spoofer.py
 !tools/desync_catcher.py
 !tools/desk_setup_test.py
+!tools/network_tester.py
+!tools/bluetooth_tester.py
 local_test_suite/
 *.tar.gz
 *.zip
