@@ -1,3 +1,4 @@
+#define _USE_MATH_DEFINES
 #include "input_injection.h"
 #include <iostream>
 #include <thread>
@@ -9,6 +10,7 @@
 #if defined(_WIN32)
     #include <winsock2.h>
     #include <ws2tcpip.h>
+    #include <intrin.h>
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
@@ -26,6 +28,7 @@ std::atomic<bool> g_sender_running(true);
 #pragma pack(push, 1)
 struct SenderMockReport {
     uint64_t timestamp_us;
+    uint32_t sequence;
     uint16_t buttons;
     int16_t accel[3];
     int16_t gyro[3];
@@ -41,7 +44,9 @@ void PrecisionSleep(std::chrono::microseconds duration) {
     }
     while (std::chrono::duration_cast<std::chrono::microseconds>(
                std::chrono::high_resolution_clock::now() - start) < duration) {
-        #if defined(__x86_64__) || defined(_M_X64)
+        #if defined(_MSC_VER)
+        _mm_pause();
+        #elif defined(__x86_64__) || defined(_M_X64)
         __builtin_ia32_pause();
         #elif defined(__arm__) || defined(__aarch64__)
         asm volatile("yield");
@@ -60,6 +65,7 @@ void IntegrationSenderThread(SOCKET client_socket, sockaddr_in target_addr) {
         SenderMockReport report;
         report.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
             loop_start.time_since_epoch()).count();
+        report.sequence = static_cast<uint32_t>(frame);
         
         // Emulate a smooth circular motion on the IR pointer coordinates
         double t = frame * 0.001; // 1ms intervals
@@ -131,6 +137,8 @@ int main() {
         // Emulated pointer coordinates should be normalized (0.0 to 1.0) and populated
         assert(state.ir_pointer[0] >= 0.0f && state.ir_pointer[0] <= 1.0f);
         assert(state.ir_pointer[1] >= 0.0f && state.ir_pointer[1] <= 1.0f);
+        // Ensure we are receiving actual dynamic data, not fallback values (default is 0.5f and accel X is 0)
+        assert(!(std::abs(state.ir_pointer[0] - 0.5f) < 0.001f && std::abs(state.ir_pointer[1] - 0.5f) < 0.001f && std::abs(state.accel[0]) < 0.001f));
         successful_frames++;
         
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // Simulate ~60fps frame steps

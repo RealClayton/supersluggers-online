@@ -15,6 +15,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const proxyPathInput = document.getElementById("proxy-path");
     const serverIpInput = document.getElementById("server-ip");
     
+    // Auto-load previously used IP address
+    const savedIp = localStorage.getItem("sluggers_remote_ip");
+    if (savedIp) {
+        serverIpInput.value = savedIp;
+    }
+    
     const roleDefenseBtn = document.getElementById("role-defense");
     const roleOffenseBtn = document.getElementById("role-offense");
     
@@ -54,6 +60,7 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const status = await invoke("check_system_status", {
                 dolphinPath: dolphinPathInput.value,
+                isoPath: isoPathInput.value,
                 proxyPath: proxyPathInput.value
             });
 
@@ -80,10 +87,18 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             // Synchronize active session buttons
-            if (status.session_active && !sessionActive) {
-                setSessionActiveMode();
-            } else if (!status.session_active && sessionActive) {
-                setSessionInactiveMode();
+            if (status.is_waiting_for_host) {
+                if (!sessionActive || launchActionBtn.textContent !== "Cancel Awaiting Host") {
+                    setSessionWaitingMode();
+                }
+            } else if (status.session_active) {
+                if (!sessionActive || launchActionBtn.textContent === "Cancel Awaiting Host") {
+                    setSessionActiveMode();
+                }
+            } else {
+                if (sessionActive) {
+                    setSessionInactiveMode();
+                }
             }
         } catch (err) {
             console.error("Status check failure:", err);
@@ -93,6 +108,13 @@ document.addEventListener("DOMContentLoaded", () => {
     function setSessionActiveMode() {
         sessionActive = true;
         launchActionBtn.textContent = "Terminate Netplay Session";
+        launchActionBtn.classList.add("active-session");
+        dashboard.classList.add("running");
+    }
+
+    function setSessionWaitingMode() {
+        sessionActive = true;
+        launchActionBtn.textContent = "Cancel Awaiting Host";
         launchActionBtn.classList.add("active-session");
         dashboard.classList.add("running");
     }
@@ -107,14 +129,15 @@ document.addEventListener("DOMContentLoaded", () => {
     // Launch Netplay Session trigger
     async function handleLaunchTrigger() {
         if (sessionActive) {
-            // Terminate Session
-            addLogLine("Initiating session shutdown sequence...", "info");
+            // Terminate or cancel Session
+            const isWaiting = launchActionBtn.textContent === "Cancel Awaiting Host";
+            addLogLine(isWaiting ? "Canceling connection listener..." : "Initiating session shutdown sequence...", "info");
             try {
                 const res = await invoke("terminate_active_session");
                 addLogLine(res, "success");
                 setSessionInactiveMode();
             } catch (err) {
-                addLogLine(`Termination failure: ${err}`, "error");
+                addLogLine(`Shutdown failure: ${err}`, "error");
             }
         } else {
             // Launch Session
@@ -124,16 +147,29 @@ document.addEventListener("DOMContentLoaded", () => {
                 iso_path: isoPathInput.value,
                 dolphin_path: dolphinPathInput.value,
                 proxy_path: proxyPathInput.value,
-                is_pitching_team: !isOffense,
-                server_ip: serverIpInput.value
+                is_host: !isOffense,
+                remote_ip: serverIpInput.value,
+                sync_port: 5556
             };
 
+            // Save IP address locally for future launches
+            localStorage.setItem("sluggers_remote_ip", serverIpInput.value);
+
             try {
-                addLogLine("Spawning background high-frequency C++ Proxy...", "info");
+                if (payload.is_host) {
+                    addLogLine("Starting Netplay Session as Host...", "info");
+                } else {
+                    addLogLine("Awaiting Host Launch signal (UDP port 5558)...", "info");
+                }
                 const res = await invoke("launch_netplay_session", { payload });
                 addLogLine(res, "success");
-                addLogLine("Launching isolated custom Dolphin Fork into game...", "info");
-                setSessionActiveMode();
+                
+                if (payload.is_host) {
+                    setSessionActiveMode();
+                    addLogLine("Launching isolated custom Dolphin Fork into game...", "info");
+                } else {
+                    setSessionWaitingMode();
+                }
             } catch (err) {
                 addLogLine(`Launch aborted: ${err}`, "error");
             }
@@ -145,6 +181,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // Poll status checks every 1.5 seconds
     setInterval(updateSystemStatus, 1500);
     updateSystemStatus();
+
+    // Listen for process start/launch events emitted from Rust backend
+    listen("netplay-session-started", () => {
+        addLogLine("Host connection established! Sync-launching custom Dolphin Fork...", "success");
+        setSessionActiveMode();
+    });
 
     // Listen for process exit events emitted from Rust background daemon thread
     listen("netplay-session-ended", () => {

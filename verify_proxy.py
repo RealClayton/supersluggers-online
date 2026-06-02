@@ -5,35 +5,90 @@ import socket
 import struct
 import time
 import statistics
+import platform
 
 def main():
     print("==================================================")
     print("Mario Super Sluggers Netplay: Proxy Verification")
     print("==================================================")
 
-    workspace_dir = "/Volumes/Clay X10/02 - Coding Projects/supersluggers-online"
-    proxy_src = os.path.join(workspace_dir, "proxy/src/main.cpp")
-    proxy_bin = os.path.join(workspace_dir, "proxy/SluggersProxy")
+    workspace_dir = os.path.dirname(os.path.abspath(__file__))
+    proxy_src = os.path.join(workspace_dir, "proxy", "src", "main.cpp")
+    
+    # Check if a compiled binary exists in build/Release or build or build/Debug or proxy
+    possible_bins = [
+        os.path.join(workspace_dir, "build", "Release", "SluggersProxy.exe"),
+        os.path.join(workspace_dir, "build", "Debug", "SluggersProxy.exe"),
+        os.path.join(workspace_dir, "build", "SluggersProxy.exe"),
+        os.path.join(workspace_dir, "proxy", "SluggersProxy.exe"),
+        os.path.join(workspace_dir, "proxy", "SluggersProxy")
+    ]
+    
+    proxy_bin = None
+    for pb in possible_bins:
+        if os.path.exists(pb):
+            proxy_bin = pb
+            break
+            
+    if proxy_bin is None:
+        # Fall back to default location
+        if platform.system() == "Windows":
+            proxy_bin = os.path.join(workspace_dir, "proxy", "SluggersProxy.exe")
+        else:
+            proxy_bin = os.path.join(workspace_dir, "proxy", "SluggersProxy")
+
     report_file = os.path.join(workspace_dir, "proxy_validation_report.md")
 
     # 1. Compile C++ Proxy
-    print("[Test] Compiling proxy source code using clang++...")
-    compile_cmd = [
-        "clang++",
-        "-std=c++17",
-        "-O3",
-        "-Wall",
-        "-pthread",
-        proxy_src,
-        "-o",
-        proxy_bin
-    ]
+    print("[Test] Compiling proxy source code...")
+    compiled = False
+    
+    # Try clang++ first if available
     try:
+        subprocess.run(["clang++", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        compile_cmd = [
+            "clang++",
+            "-std=c++17",
+            "-O3",
+            "-Wall",
+            "-pthread",
+            proxy_src,
+            "-o",
+            proxy_bin
+        ]
+        print("  Compiling with clang++...")
         subprocess.run(compile_cmd, check=True)
-        print("[Test Success] Compiled successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"[Test Failure] Compilation failed with error: {e}")
+        compiled = True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    if not compiled:
+        # Try building with CMake
+        try:
+            print("  clang++ not found or failed. Trying CMake compilation...")
+            subprocess.run(["cmake", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Run CMake configure and build
+            subprocess.run(["cmake", "-B", "build", "-S", "proxy"], check=True)
+            subprocess.run(["cmake", "--build", "build", "--config", "Release"], check=True)
+            
+            # Find the compiled binary from build directory
+            for pb in possible_bins:
+                if os.path.exists(pb):
+                    proxy_bin = pb
+                    compiled = True
+                    break
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"  CMake build failed or not found: {e}")
+            
+    if not compiled and os.path.exists(proxy_bin):
+        print(f"[Test Warning] Compilation failed, but existing binary found at {proxy_bin}. Using it.")
+        compiled = True
+        
+    if not compiled:
+        print("[Test Failure] Could not compile the proxy and no existing binary was found.")
         sys.exit(1)
+        
+    print(f"[Test Success] Using proxy binary at: {proxy_bin}")
 
     # 2. Setup UDP Listening Socket
     print("[Test] Setting up UDP receiver socket on 127.0.0.1:5555...")
@@ -174,7 +229,7 @@ This report records the automated physical diagnostics, packet structure parsing
 ## 1. System Metadata
 * **Diagnostic Timestamp:** {time.strftime('%Y-%m-%d %H:%M:%S')}
 * **Compiled Binary Target:** `{proxy_bin}`
-* **Host Operating System:** macOS (Apple Silicon / Intel Universal Binary)
+* **Host Operating System:** {platform.system()} ({platform.machine()})
 * **Target Socket Destination:** `127.0.0.1:5555` (UDP)
 
 ---

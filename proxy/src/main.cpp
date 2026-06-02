@@ -1,3 +1,4 @@
+#define _USE_MATH_DEFINES
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -10,6 +11,7 @@
 #if defined(_WIN32)
     #include <winsock2.h>
     #include <ws2tcpip.h>
+    #include <intrin.h>
     #pragma comment(lib, "ws2_32.lib")
 #else
     #include <sys/socket.h>
@@ -53,7 +55,9 @@ void HighPrecisionSleep(std::chrono::microseconds duration) {
     // Spin lock for ultra-precise sub-millisecond resolution
     while (std::chrono::duration_cast<std::chrono::microseconds>(
                std::chrono::high_resolution_clock::now() - start) < duration) {
-        #if defined(__x86_64__) || defined(_M_X64)
+        #if defined(_MSC_VER)
+        _mm_pause();
+        #elif defined(__x86_64__) || defined(_M_X64)
         __builtin_ia32_pause();
         #elif defined(__arm__) || defined(__aarch64__)
         asm volatile("yield");
@@ -71,11 +75,24 @@ void ParseHIDReport(const unsigned char* buf, int bytes_read, WiiRemoteReport& r
     // Byte 0 is Report ID
     uint8_t report_id = buf[0];
 
-    // 1. Core Buttons: Bytes 1 & 2
-    // Mask out the accelerometer LSBs (bits 5 & 6) from button bytes
-    uint16_t button1 = buf[1] & 0x1F; // Mask: Left, Right, Down, Up, Plus
-    uint16_t button2 = buf[2] & 0x9F; // Mask: Two, One, B, A, Minus, Home (bit 7)
-    report.buttons = (button1 << 8) | button2;
+    // 1. Mapped Digital Buttons: Align physical reports with Dolphin's expected bitmasks
+    uint16_t mapped_buttons = 0;
+    // buf[1] contains: D-pad Left (bit 0), Right (bit 1), Down (bit 2), Up (bit 3), Plus (bit 4)
+    if (buf[1] & 0x01) mapped_buttons |= 0x0001; // PAD_LEFT
+    if (buf[1] & 0x02) mapped_buttons |= 0x0002; // PAD_RIGHT
+    if (buf[1] & 0x04) mapped_buttons |= 0x0004; // PAD_DOWN
+    if (buf[1] & 0x08) mapped_buttons |= 0x0008; // PAD_UP
+    if (buf[1] & 0x10) mapped_buttons |= 0x0010; // BUTTON_PLUS
+
+    // buf[2] contains: Two (bit 0), One (bit 1), B (bit 2), A (bit 3), Minus (bit 4), Home (bit 7)
+    if (buf[2] & 0x01) mapped_buttons |= 0x0100; // BUTTON_TWO
+    if (buf[2] & 0x02) mapped_buttons |= 0x0200; // BUTTON_ONE
+    if (buf[2] & 0x04) mapped_buttons |= 0x0400; // BUTTON_B
+    if (buf[2] & 0x08) mapped_buttons |= 0x0800; // BUTTON_A
+    if (buf[2] & 0x10) mapped_buttons |= 0x1000; // BUTTON_MINUS
+    if (buf[2] & 0x80) mapped_buttons |= 0x8000; // BUTTON_HOME
+
+    report.buttons = mapped_buttons;
 
     // 2. Accelerometer: Bytes 3, 4, 5 (10-bit precision)
     if (report_id == 0x31 || report_id == 0x33 || report_id == 0x35 || report_id == 0x37) {
@@ -201,7 +218,7 @@ void GenerateMockWiiRemoteReport(WiiRemoteReport& report, uint64_t frame) {
         if (swing_t < 0.3) { // 300ms swing duration
             report.gyro[0] = static_cast<int16_t>(2000.0 * std::sin(M_PI * swing_t / 0.3)); // Sudden rotational spikes
             report.accel[0] = static_cast<int16_t>(512 + 800 * std::sin(M_PI * swing_t / 0.3));
-            report.buttons |= 0x0008; // Simulate holding 'A' button during swing
+            report.buttons |= 0x0800; // Simulate holding 'A' button during swing
         } else {
             report.gyro[0] = 0;
         }
@@ -221,6 +238,11 @@ void GenerateMockWiiRemoteReport(WiiRemoteReport& report, uint64_t frame) {
 void BluetoothPollingThread(SOCKET udp_socket, sockaddr_in target_addr) {
     std::cout << "[Proxy] Starting Bluetooth Polling Thread at 1000Hz..." << std::endl;
 
+    WiiRemoteReport persistent_report;
+    std::memset(&persistent_report, 0, sizeof(WiiRemoteReport));
+    persistent_report.ir_pointer[0] = 512;
+    persistent_report.ir_pointer[1] = 384;
+
 #if HARDWARE_SUPPORT_ENABLED
     std::cout << "[Proxy] HIDAPI compilation detected. Scanning for hardware..." << std::endl;
     if (hid_init() != 0) {
@@ -235,46 +257,231 @@ void BluetoothPollingThread(SOCKET udp_socket, sockaddr_in target_addr) {
     } else {
         std::cout << "[Proxy Success] Wii Remote hardware connection established!" << std::endl;
         
-        // Configure Wii Remote: Enable continuous reporting and set mode to 0x33 (Buttons, Accel, 12-byte IR)
-        // Command: 0x12 -> reporting mode write. 0x04 -> continuous flag. 0x33 -> Report ID target.
+        // Set non-blocking mode to keep loop spinning at exactly 1000Hz
+        hid_set_nonblocking(wii_remote, 1);
+        
+        // -----------------------------------------------------------------
+        //               WII REMOTE IR CAMERA INITIALIZATION SEQUENCE
+        // -----------------------------------------------------------------
+        // Step 1: Enable IR Pixel Clock (Report 0x13 -> exact size 2 bytes)
+        unsigned char ir_cmd1[2] = { 0x13, 0x04 };
+        if (hid_write(wii_remote, ir_cmd1, 2) < 0) {
+            std::cerr << "[Proxy Warning] Step 1 (IR Pixel Clock Enable 0x13) write failed!" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Delay for hardware clock stability
+        
+        // Step 2: Enable IR Logic (Report 0x1a -> exact size 2 bytes)
+        unsigned char ir_cmd2[2] = { 0x1a, 0x04 };
+        if (hid_write(wii_remote, ir_cmd2, 2) < 0) {
+            std::cerr << "[Proxy Warning] Step 2 (IR Logic Enable 0x1a) write failed!" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        
+        // Step 3: Write 0x01 to Register 0x04b00030 (Power on Camera, Report 0x16 -> size 22)
+        unsigned char ir_cmd3[22] = { 0 };
+        ir_cmd3[0] = 0x16; // Memory/Register write
+        ir_cmd3[1] = 0x04; // Register write flag
+        ir_cmd3[2] = 0x04; // Offset 24-16
+        ir_cmd3[3] = 0xb0; // Offset 15-8
+        ir_cmd3[4] = 0x30; // Offset 7-0 (register 0x30)
+        ir_cmd3[5] = 0x01; // Write size = 1
+        ir_cmd3[6] = 0x01; // Value = 0x01 (Power on camera)
+        if (hid_write(wii_remote, ir_cmd3, sizeof(ir_cmd3)) < 0) {
+            std::cerr << "[Proxy Warning] Step 3 (Camera Register Write 0x30) write failed!" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // Step 4: Write Sensitivity Block 1 to Register 0x04b00000 (Level 3 sensitivity)
+        unsigned char ir_cmd4[22] = { 0 };
+        ir_cmd4[0] = 0x16;
+        ir_cmd4[1] = 0x04;
+        ir_cmd4[2] = 0x04;
+        ir_cmd4[3] = 0xb0;
+        ir_cmd4[4] = 0x00; // register 0x00
+        ir_cmd4[5] = 0x09; // Write size = 9
+        ir_cmd4[6] = 0x02;
+        ir_cmd4[7] = 0x00;
+        ir_cmd4[8] = 0x00;
+        ir_cmd4[9] = 0x71;
+        ir_cmd4[10] = 0x01;
+        ir_cmd4[11] = 0x00;
+        ir_cmd4[12] = 0xaa;
+        ir_cmd4[13] = 0x00;
+        ir_cmd4[14] = 0x64;
+        if (hid_write(wii_remote, ir_cmd4, sizeof(ir_cmd4)) < 0) {
+            std::cerr << "[Proxy Warning] Step 4 (Sensitivity Block 1 Write 0x00) write failed!" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // Step 5: Write Sensitivity Block 2 to Register 0x04b0001a
+        unsigned char ir_cmd5[22] = { 0 };
+        ir_cmd5[0] = 0x16;
+        ir_cmd5[1] = 0x04;
+        ir_cmd5[2] = 0x04;
+        ir_cmd5[3] = 0xb0;
+        ir_cmd5[4] = 0x1a; // register 0x1a
+        ir_cmd5[5] = 0x02; // Write size = 2
+        ir_cmd5[6] = 0x63;
+        ir_cmd5[7] = 0x03;
+        if (hid_write(wii_remote, ir_cmd5, sizeof(ir_cmd5)) < 0) {
+            std::cerr << "[Proxy Warning] Step 5 (Sensitivity Block 2 Write 0x1a) write failed!" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // Step 6: Write Mode 0x03 (Extended Mode) to Register 0x04b00033
+        unsigned char ir_cmd6[22] = { 0 };
+        ir_cmd6[0] = 0x16;
+        ir_cmd6[1] = 0x04;
+        ir_cmd6[2] = 0x04;
+        ir_cmd6[3] = 0xb0;
+        ir_cmd6[4] = 0x33; // register 0x33
+        ir_cmd6[5] = 0x01; // Write size = 1
+        ir_cmd6[6] = 0x03; // Value = 0x03 (Extended)
+        if (hid_write(wii_remote, ir_cmd6, sizeof(ir_cmd6)) < 0) {
+            std::cerr << "[Proxy Warning] Step 6 (Extended Mode Write 0x33) write failed!" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // Step 7: Write 0x08 to Register 0x04b00030 again (Finalize Power On)
+        unsigned char ir_cmd7[22] = { 0 };
+        ir_cmd7[0] = 0x16;
+        ir_cmd7[1] = 0x04;
+        ir_cmd7[2] = 0x04;
+        ir_cmd7[3] = 0xb0;
+        ir_cmd7[4] = 0x30; // register 0x30
+        ir_cmd7[5] = 0x01; // Write size = 1
+        ir_cmd7[6] = 0x08;
+        if (hid_write(wii_remote, ir_cmd7, sizeof(ir_cmd7)) < 0) {
+            std::cerr << "[Proxy Warning] Step 7 (Final Power Write 0x30) write failed!" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        
+        // Step 8: Configure Wii Remote: Enable continuous reporting and set mode to 0x33 (exact size 3 bytes)
         unsigned char config_cmd[3] = { 0x12, 0x04, 0x33 };
-        hid_write(wii_remote, config_cmd, sizeof(config_cmd));
+        if (hid_write(wii_remote, config_cmd, 3) < 0) {
+            std::cerr << "[Proxy Warning] Step 8 (Reporting Mode Write 0x12) write failed!" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // Step 9: Request Status Update (Report 0x15 -> exact size 2 bytes) to force state synchronization
+        unsigned char status_cmd[2] = { 0x15, 0x00 };
+        if (hid_write(wii_remote, status_cmd, 2) < 0) {
+            std::cerr << "[Proxy Warning] Step 9 (Status Request 0x15) write failed!" << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        
+        std::cout << "[Proxy Success] Wii Remote IR Camera initialized successfully!" << std::endl;
     }
 #else
     std::cout << "[Proxy] Pure software compilation active (Mock Simulator enabled)." << std::endl;
 #endif
 
+    bool use_mouse_passthrough = false;
+#if HARDWARE_SUPPORT_ENABLED
+    if (!wii_remote) {
+        std::cout << "[Proxy Success] Automatically switched to High-Precision Mouse & Keyboard Passthrough!" << std::endl;
+        std::cout << "[Proxy Success] Set your Mayflash DolphinBar to Mode 2 (Mouse Mode) and point remote at screen." << std::endl;
+        use_mouse_passthrough = true;
+    }
+#else
+    use_mouse_passthrough = false;
+#endif
+
     uint64_t frame_count = 0;
     auto last_time = std::chrono::high_resolution_clock::now();
+    int last_bytes_read = 0;
+    unsigned char last_buf[22] = { 0 };
 
     while (g_running) {
         auto loop_start = std::chrono::high_resolution_clock::now();
 
-        WiiRemoteReport report;
-        std::memset(&report, 0, sizeof(WiiRemoteReport));
-        
-        report.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        // Update timestamps and sequences in persistent report
+        persistent_report.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
             loop_start.time_since_epoch()).count();
+        persistent_report.sequence = static_cast<uint32_t>(frame_count + 1);
 
 #if HARDWARE_SUPPORT_ENABLED
         if (wii_remote) {
             unsigned char buf[22];
             std::memset(buf, 0, sizeof(buf));
             
-            // Poll standard Bluetooth reports with 1ms timeout
-            int bytes_read = hid_read_timeout(wii_remote, buf, sizeof(buf), 1);
+            // Poll standard Bluetooth reports non-blocking to prevent Windows scheduler latency
+            int bytes_read = hid_read(wii_remote, buf, sizeof(buf));
             if (bytes_read > 0) {
-                ParseHIDReport(buf, bytes_read, report);
+                last_bytes_read = bytes_read;
+                std::memcpy(last_buf, buf, bytes_read);
+                ParseHIDReport(buf, bytes_read, persistent_report);
+            } else if (bytes_read < 0) {
+                if (frame_count % 1000 == 0) {
+                    std::cerr << "[Proxy Error] Wii Remote read failure or disconnected! (hid_read returned: " << bytes_read << ")" << std::endl;
+                }
             }
+        } else if (use_mouse_passthrough) {
+            // 1. Read Windows Desktop Mouse Cursor (which is moved by the physical remote in Mode 2)
+            POINT p;
+            if (GetCursorPos(&p)) {
+                int screen_width = GetSystemMetrics(SM_CXSCREEN);
+                int screen_height = GetSystemMetrics(SM_CYSCREEN);
+                if (screen_width > 0 && screen_height > 0) {
+                    persistent_report.ir_pointer[0] = static_cast<uint16_t>((p.x * 1023) / screen_width);
+                    persistent_report.ir_pointer[1] = static_cast<uint16_t>((p.y * 767) / screen_height);
+                }
+            }
+
+            // 2. Read Windows Keyboard / Mouse Button states mapped to Wiimote
+            uint16_t mapped_buttons = 0;
+            if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) mapped_buttons |= 0x0800; // Left Click (Wii A) -> BUTTON_A
+            if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) mapped_buttons |= 0x0400; // Right Click (Wii B) -> BUTTON_B
+            if (GetAsyncKeyState(VK_LEFT) & 0x8000)    mapped_buttons |= 0x0001; // Left Arrow -> PAD_LEFT
+            if (GetAsyncKeyState(VK_RIGHT) & 0x8000)   mapped_buttons |= 0x0002; // Right Arrow -> PAD_RIGHT
+            if (GetAsyncKeyState(VK_DOWN) & 0x8000)    mapped_buttons |= 0x0004; // Down Arrow -> PAD_DOWN
+            if (GetAsyncKeyState(VK_UP) & 0x8000)      mapped_buttons |= 0x0008; // Up Arrow -> PAD_UP
+            if (GetAsyncKeyState(VK_RETURN) & 0x8000)  mapped_buttons |= 0x0010; // Enter -> Plus
+            if (GetAsyncKeyState(VK_BACK) & 0x8000)    mapped_buttons |= 0x1000; // Backspace -> Minus
+            if (GetAsyncKeyState(0x31) & 0x8000)       mapped_buttons |= 0x0200; // Key 1 -> 1
+            if (GetAsyncKeyState(0x32) & 0x8000)       mapped_buttons |= 0x0100; // Key 2 -> 2
+            if (GetAsyncKeyState(VK_ESCAPE) & 0x8000)   mapped_buttons |= 0x8000; // Escape -> Home
+
+            persistent_report.buttons = mapped_buttons;
+
+            // 3. Motion/Swing Detection: Calculate mouse velocity and trigger swing on fast flicks!
+            static int last_x = 0;
+            static int last_y = 0;
+            int dx = p.x - last_x;
+            int dy = p.y - last_y;
+            last_x = p.x;
+            last_y = p.y;
+
+            double velocity = std::sqrt(dx*dx + dy*dy);
+            static int swing_frames_left = 0;
+
+            // Trigger physical swing/pitch report on raw remote wrist flicks
+            if (velocity > 60.0 && swing_frames_left == 0) { // Flick threshold
+                swing_frames_left = 300; // 300ms swing duration
+            }
+
+            if (swing_frames_left > 0) {
+                persistent_report.gyro[0] = 2000; // Spiking angular velocity
+                persistent_report.accel[0] = 512 + 800; // Sudden G-Force spike
+                persistent_report.buttons |= 0x0800; // Auto-hold A button during swing
+                swing_frames_left--;
+            } else {
+                persistent_report.gyro[0] = 0;
+                persistent_report.accel[0] = 512; // Base gravity (1G)
+            }
+            persistent_report.gyro[1] = 0;
+            persistent_report.gyro[2] = 0;
+            persistent_report.accel[1] = 512;
+            persistent_report.accel[2] = 512;
         } else {
-            GenerateMockWiiRemoteReport(report, frame_count);
+            GenerateMockWiiRemoteReport(persistent_report, frame_count);
         }
 #else
-        GenerateMockWiiRemoteReport(report, frame_count);
+        GenerateMockWiiRemoteReport(persistent_report, frame_count);
 #endif
 
         // Serialize and send UDP packet to custom Dolphin Fork API
-        int bytes_sent = sendto(udp_socket, reinterpret_cast<const char*>(&report), sizeof(report), 0,
+        int bytes_sent = sendto(udp_socket, reinterpret_cast<const char*>(&persistent_report), sizeof(persistent_report), 0,
                                 reinterpret_cast<struct sockaddr*>(&target_addr), sizeof(target_addr));
         
         if (bytes_sent == SOCKET_ERROR) {
@@ -287,7 +494,32 @@ void BluetoothPollingThread(SOCKET udp_socket, sockaddr_in target_addr) {
             double duration_sec = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_time).count() / 1000.0;
             std::cout << "[Proxy Status] Active. Frame: " << frame_count 
                       << " | Polled 1000 packets in " << duration_sec << "s (Target: 1.0s) | Sample Accel X: " 
-                      << report.accel[0] << std::endl;
+                      << persistent_report.accel[0] << std::endl;
+            
+#if HARDWARE_SUPPORT_ENABLED
+            if (use_mouse_passthrough) {
+                std::cout << "               [Passthrough Log] Active | Mapped X/Y: (" 
+                          << persistent_report.ir_pointer[0] << ", " 
+                          << persistent_report.ir_pointer[1] << ") | Accel X: "
+                          << persistent_report.accel[0] << std::endl;
+            } else if (wii_remote && last_bytes_read > 0) {
+                std::cout << "               [Telemetry Log] Last bytes read: " << last_bytes_read 
+                          << " | Report ID: 0x" << std::hex << (int)last_buf[0] << std::dec << std::endl;
+                std::cout << "               [Raw Bytes] ";
+                for (int i = 0; i < last_bytes_read; ++i) {
+                    std::cout << std::hex << (int)last_buf[i] << " " << std::dec;
+                }
+                std::cout << std::endl;
+                
+                // Parse blob statuses for terminal feedback
+                bool b1_active = (last_bytes_read >= 9) && !(last_buf[6] == 0xFF && last_buf[7] == 0xFF);
+                bool b2_active = (last_bytes_read >= 12) && !(last_buf[9] == 0xFF && last_buf[10] == 0xFF);
+                std::cout << "               [IR Diagnostics] Blob1: " << (b1_active ? "ACTIVE" : "INACTIVE")
+                          << " | Blob2: " << (b2_active ? "ACTIVE" : "INACTIVE") 
+                          << " | Mapped X/Y: (" << persistent_report.ir_pointer[0] << ", " 
+                          << persistent_report.ir_pointer[1] << ")" << std::endl;
+            }
+#endif
             last_time = current_time;
         }
 

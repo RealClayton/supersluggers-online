@@ -39,3 +39,12 @@ bin/
 *.sln
 *.vcxproj
 *.filters
+
+# Dolphin and Custom Build Artifacts / Source
+build_dolphin/
+build_custom_dolphin/
+dolphin-src/
+
+# Local state / temporary files
+last_ip.txt
+scoreboard_dump.txt

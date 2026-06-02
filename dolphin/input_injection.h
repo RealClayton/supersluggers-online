@@ -8,6 +8,9 @@
 #include <cstdint>
 
 #if defined(_WIN32)
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
     #include <winsock2.h>
 #else
     typedef int SOCKET;
@@ -131,6 +134,9 @@ public:
 
     // Update the client's team role
     void SetClientRole(bool is_offense);
+
+    // Returns true if the receiver listener is active
+    bool IsActive() const { return m_running; }
 
 private:
     NetplayInputReceiver();
