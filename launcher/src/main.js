@@ -45,14 +45,14 @@ document.addEventListener("DOMContentLoaded", () => {
         roleDefenseBtn.classList.add("active");
         roleOffenseBtn.classList.remove("active");
         isOffense = false;
-        addLogLine("Dynamic Netplay Role set to DEFENSE (Local Pitching authority active).");
+        addLogLine("Dynamic Netplay Role set to DEFENSE (Deterministic Netplay with 0ms Pitching Cursor Overlay).");
     });
 
     roleOffenseBtn.addEventListener("click", () => {
         roleOffenseBtn.classList.add("active");
         roleDefenseBtn.classList.remove("active");
         isOffense = true;
-        addLogLine("Dynamic Netplay Role set to OFFENSE (Local Batting/Fielding authority active).");
+        addLogLine("Dynamic Netplay Role set to OFFENSE (Deterministic Netplay with 0ms Batting/Fielding Cursor Overlay).");
     });
 
     // Check system status in real-time
