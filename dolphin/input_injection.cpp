@@ -33,6 +33,10 @@ void AdaptiveJitterBuffer::Reset() {
     m_queue.clear();
     std::memset(&m_last_valid_report, 0, sizeof(ProxyInputReport));
     std::memset(&m_second_last_report, 0, sizeof(ProxyInputReport));
+    m_expected_sequence = 0;
+    m_dropped_packets = 0;
+    m_out_of_order_packets = 0;
+    m_buffer_delay_us = 30000;
 }
 
 ProxyInputReport AdaptiveJitterBuffer::GetLatestRawReport() const {
@@ -92,8 +96,12 @@ ProxyInputReport AdaptiveJitterBuffer::InterpolateLinear(const ProxyInputReport&
     }
     
     // LERP pointer coordinate fallbacks (Hermite used for high-fidelity)
-    result.ir_pointer[0] = p1.ir_pointer[0] + static_cast<uint16_t>(t * (p2.ir_pointer[0] - p1.ir_pointer[0]));
-    result.ir_pointer[1] = p1.ir_pointer[1] + static_cast<uint16_t>(t * (p2.ir_pointer[1] - p1.ir_pointer[1]));
+    result.ir_pointer[0] = static_cast<uint16_t>(
+        static_cast<double>(p1.ir_pointer[0]) + t * (static_cast<double>(p2.ir_pointer[0]) - static_cast<double>(p1.ir_pointer[0]))
+    );
+    result.ir_pointer[1] = static_cast<uint16_t>(
+        static_cast<double>(p1.ir_pointer[1]) + t * (static_cast<double>(p2.ir_pointer[1]) - static_cast<double>(p1.ir_pointer[1]))
+    );
     
     return result;
 }
@@ -147,6 +155,19 @@ EmulatedWiimoteState AdaptiveJitterBuffer::PullState(uint64_t current_time_us) {
         return state;
     }
 
+    // Prevent unsigned underflow / binary search crash if size <= 1
+    if (m_queue.size() <= 1) {
+        ProxyInputReport oldest = m_queue.front();
+        state.buttons = oldest.buttons;
+        for (int i = 0; i < 3; ++i) {
+            state.accel[i] = (oldest.accel[i] - 512.0f) / 102.0f;
+            state.gyro[i]  = oldest.gyro[i] / 8192.0f;
+        }
+        state.ir_pointer[0] = oldest.ir_pointer[0] / 1023.0f;
+        state.ir_pointer[1] = oldest.ir_pointer[1] / 1023.0f;
+        return state;
+    }
+
     // Playback target time with adaptive jitter buffer delay offset
     uint64_t target_time = current_time_us;
     if (!m_authority_bypass) {
@@ -168,20 +189,33 @@ EmulatedWiimoteState AdaptiveJitterBuffer::PullState(uint64_t current_time_us) {
 
     // Boundary: Target is newer than the newest packet (network drop/late frame)
     if (target_time >= m_queue.back().timestamp_us) {
-        // Extrapolate with slight decay to prevent analog drift loops
         ProxyInputReport newest = m_queue.back();
         state.buttons = newest.buttons;
+        
+        uint64_t age_us = 0;
+        if (target_time > newest.timestamp_us) {
+            age_us = target_time - newest.timestamp_us;
+        }
+        
+        // Only apply decay if the packet is actually stale (older than 15ms)
+        float decay_accel = 1.0f;
+        float decay_gyro = 1.0f;
+        if (age_us > 15000) {
+            decay_accel = 0.95f;
+            decay_gyro = 0.90f;
+            
+            // Dynamically widen buffer size due to late packet detection (adaptation)
+            if (!m_authority_bypass) {
+                m_buffer_delay_us = std::min(m_buffer_delay_us + 1000, uint64_t(100000)); // Max 100ms
+            }
+        }
+        
         for (int i = 0; i < 3; ++i) {
-            state.accel[i] = ((newest.accel[i] - 512.0f) / 102.0f) * 0.95f; 
-            state.gyro[i]  = (newest.gyro[i] / 8192.0f) * 0.90f; // Rapid rotational decay
+            state.accel[i] = ((newest.accel[i] - 512.0f) / 102.0f) * decay_accel; 
+            state.gyro[i]  = (newest.gyro[i] / 8192.0f) * decay_gyro;
         }
         state.ir_pointer[0] = newest.ir_pointer[0] / 1023.0f;
         state.ir_pointer[1] = newest.ir_pointer[1] / 1023.0f;
-        
-        // Dynamically widen buffer size due to late packet detection (adaptation)
-        if (!m_authority_bypass) {
-            m_buffer_delay_us = std::min(m_buffer_delay_us + 1000, uint64_t(100000)); // Max 100ms
-        }
         return state;
     }
 
@@ -235,14 +269,14 @@ EmulatedWiimoteState AdaptiveJitterBuffer::PullState(uint64_t current_time_us) {
 
     // Slowly shrink delay if network is stable (jitter decay)
     if (!m_authority_bypass && m_buffer_delay_us > 20000) { // Keep floor of 20ms
-        m_buffer_delay_us -= 1; // Sub-microsecond gradual recovery
+        m_buffer_delay_us = std::max(uint64_t(20000), m_buffer_delay_us - 10); // 10us recovery per frame
     }
 
     return state;
 }
 
 // ============================================================================
-// HostAuthorityManager Implementation (DEPRECATED - Retained as legacy stub)
+// HostAuthorityManager Implementation
 // ============================================================================
 
 HostAuthorityManager::HostAuthorityManager() {
@@ -251,7 +285,14 @@ HostAuthorityManager::HostAuthorityManager() {
 }
 
 void HostAuthorityManager::UpdateStateFromMemoryRegister(uint8_t memory_reg_val) {
-    m_mode = NetplayAuthority::LOCAL_ONLY;
+    // 0x01 = Pitcher/Defense, 0x02 = Batter/Offense
+    if (memory_reg_val == 0x02) {
+        m_is_offense_team = true;
+        m_mode = NetplayAuthority::BATTER_CONTROL;
+    } else if (memory_reg_val == 0x01) {
+        m_is_offense_team = false;
+        m_mode = NetplayAuthority::PITCHER_CONTROL;
+    }
 }
 
 // ============================================================================
@@ -269,7 +310,11 @@ NetplayInputReceiver::NetplayInputReceiver()
       m_socket(INVALID_SOCKET),
       m_ghost_click_active(false),
       m_ghost_click_start_us(0),
-      m_last_buttons_state(0) {
+      m_last_buttons_state(0),
+      m_local_player_slot(0),
+      m_sender_locked(false),
+      m_locked_ip(0),
+      m_locked_port(0) { // Default to Player 1 (slot 0)
     m_frozen_ir_pointer[0] = 0.5f;
     m_frozen_ir_pointer[1] = 0.5f;
 }
@@ -289,7 +334,22 @@ void NetplayInputReceiver::Start(uint16_t port) {
     WSAStartup(MAKEWORD(2, 2), &wsa);
 #endif
 
+    m_sender_locked = false;
+    m_locked_ip = 0;
+    m_locked_port = 0;
+
     m_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+    // Apply socket receive timeout (100ms) to prevent thread deadlocks on stop/exit
+#if defined(_WIN32)
+    DWORD timeout = 100;
+    setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 100000;
+    setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
     
     sockaddr_in local_addr;
     local_addr.sin_family = AF_INET;
@@ -340,12 +400,26 @@ void NetplayInputReceiver::ListeningLoop() {
                                  reinterpret_cast<sockaddr*>(&sender_addr), &sender_len);
         
         if (bytes_rec == SOCKET_ERROR) {
-            // Socket was closed or read error
+            // Socket was closed, read timeout (100ms SO_RCVTIMEO), or read error
             continue;
         }
 
         if (bytes_rec == sizeof(ProxyInputReport)) {
-            m_jitter_buffer.PushReport(report);
+            // Sender lock validation to prevent arbitrary network input injection
+            uint32_t sender_ip = sender_addr.sin_addr.s_addr;
+            uint16_t sender_port = ntohs(sender_addr.sin_port);
+            
+            if (!m_sender_locked) {
+                m_locked_ip = sender_ip;
+                m_locked_port = sender_port;
+                m_sender_locked = true;
+                std::cout << "[Dolphin Fork] Locked input receiver to sender " 
+                          << inet_ntoa(sender_addr.sin_addr) << ":" << sender_port << std::endl;
+            }
+            
+            if (sender_ip == m_locked_ip && sender_port == m_locked_port) {
+                m_jitter_buffer.PushReport(report);
+            }
         }
     }
 }
@@ -354,8 +428,8 @@ EmulatedWiimoteState NetplayInputReceiver::GetEmulatedState() {
     uint64_t current_time = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now().time_since_epoch()).count();
         
-    // Always use standard, jitter-buffered deterministic delay in hybrid netplay model
-    m_jitter_buffer.SetAuthorityBypass(false);
+    // Dynamically bypass jitter buffering delay if client represents the offense (Batter)
+    m_jitter_buffer.SetAuthorityBypass(m_authority_manager.HasLocalAuthority());
         
     // Retrieve the jitter-buffered and interpolated controller input
     return m_jitter_buffer.PullState(current_time);
@@ -378,8 +452,8 @@ EmulatedWiimoteState NetplayInputReceiver::Get0msLocalCursorState() {
     float raw_ir_x = latest.ir_pointer[0] / 1023.0f;
     float raw_ir_y = latest.ir_pointer[1] / 1023.0f;
 
-    // Detect Click Transition (Button A: 0x0800, Button B: 0x0400)
-    uint16_t click_mask = 0x0C00; 
+    // Detect Click Transition (Button A: 0x0008, Button B: 0x0004, or byte-swapped representations)
+    uint16_t click_mask = 0x000C | 0x0C00; 
     uint16_t current_clicks = latest.buttons & click_mask;
     uint16_t last_clicks = m_last_buttons_state & click_mask;
     
@@ -395,9 +469,10 @@ EmulatedWiimoteState NetplayInputReceiver::Get0msLocalCursorState() {
     
     m_last_buttons_state = latest.buttons;
 
-    // Verify if the ghost click freeze duration (50ms) has elapsed
+    // Verify if the ghost click freeze duration (matching dynamic buffer delay) has elapsed
     if (m_ghost_click_active) {
-        if (current_time_us - m_ghost_click_start_us >= 50000) {
+        uint64_t freeze_duration = m_jitter_buffer.GetBufferDelayUs();
+        if (current_time_us - m_ghost_click_start_us >= freeze_duration) {
             m_ghost_click_active = false;
         }
     }
@@ -414,9 +489,9 @@ EmulatedWiimoteState NetplayInputReceiver::Get0msLocalCursorState() {
 }
 
 void NetplayInputReceiver::SyncGeckoState(uint8_t state_reg) {
-    // Stub - State synchronization verified dynamically under the hybrid model
+    m_authority_manager.UpdateStateFromMemoryRegister(state_reg);
 }
 
 void NetplayInputReceiver::SetClientRole(bool is_offense) {
-    // Stub
+    m_authority_manager.SetTeamRole(is_offense);
 }

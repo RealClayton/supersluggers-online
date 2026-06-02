@@ -124,7 +124,18 @@ To handle environments where direct P2P connections are restricted by symmetric 
 *   **`dolphin/CMakeLists.txt`**: Added a modular build specification to isolate testing of the custom Netplay emulator extension.
 *   **`proxy/CMakeLists.txt`**: Overhauled proxy build configurations, allowing developers to target optimized compilation modes with or without `hidapi` hardware hooks.
 
+### 5. UDP Payload Spoofer (`tools/udp_spoofer.py`)
+Deterministic hardware-free input injector that mimics `SluggersProxy`:
+*   Transmits structured 30-byte UDP packets to Dolphin's input port (`5555`).
+*   Includes built-in patterns (`menu-navigate`, `swing-bat`, `sine-jitter`, `chaos-drop`) to test adaptive buffering, interpolation, and click freezing.
+
+### 6. Automated Desync Catcher (`tools/desync_catcher.py`)
+Real-time memory auditing tool to capture emulation desynchronizations:
+*   Queries Wii `MEM1` memory (`0x80000000` to `0x817FFFFF`) using POSIX shared memory (macOS/Linux) or Win32 File Mapping (Windows).
+*   Runs a server-client framework over TCP to hash and compare memory state across peer instances frame-by-frame. Instantly terminates emulators if a desync is detected.
+
 ---
+
 
 ## 4. Network Edge Cases & Resilience
 
@@ -162,6 +173,17 @@ You can compile and run automated diagnostics on the C++ Bluetooth Proxy locally
 
 > [!TIP]
 > View [`proxy_validation_report.md`](./proxy_validation_report.md) in the workspace root to check compliance bounds. The high-precision thread spinlock routinely locks loop intervals to **1000 Hz with less than 15 us of standard deviation jitter**.
+
+### 5.2.5 Unified Test & Watch Orchestrator (`run_tests.py`)
+To build and execute the entire diagnostic ecosystem (Proxy validation, Dolphin unit tests, integration tests, and stress tests) with a single command:
+```bash
+python3 run_tests.py
+```
+
+To run a continuous background watch loop that monitors source directories (`proxy/`, `dolphin/`) and automatically recompiles/reruns all test suites on any code modifications:
+```bash
+python3 run_tests.py --watch
+```
 
 ### 5.3 Running the Tauri Launcher
 To spin up the native dashboard in developer mode:

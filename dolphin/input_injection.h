@@ -62,14 +62,16 @@ public:
     // Diagnostic accessors
     uint32_t GetDroppedPacketCount() const { return m_dropped_packets; }
     uint32_t GetOutOfOrderCount() const { return m_out_of_order_packets; }
+    uint64_t GetBufferDelayUs() const { return m_buffer_delay_us; }
 
-    // Allows the HostAuthorityManager to bypass jitter delay (DEPRECATED - Locked to false in deterministic model)
-    void SetAuthorityBypass(bool bypass) { m_authority_bypass = false; }
+    // Controls whether to bypass jitter delay for 0ms local input (Offense/Batter mode)
+    void SetAuthorityBypass(bool bypass) { m_authority_bypass = bypass; }
+    bool GetAuthorityBypass() const { return m_authority_bypass; }
 
 private:
     mutable std::mutex m_mutex;
     std::vector<ProxyInputReport> m_queue;
-    bool m_authority_bypass;
+    bool m_authority_bypass; // In asymmetric mode, true = offense (0ms delay), false = defense (buffered RTT delay)
     
     // History trackers for Hermite spline interpolation
     ProxyInputReport m_last_valid_report;
@@ -88,13 +90,13 @@ private:
 };
 
 /**
- * Dynamic Host Authority Manager (DEPRECATED - Retained as legacy stub)
- * Monitors game states (from Gecko RAM hooks) and negotiates input ownership.
+ * Dynamic Host Authority Manager
+ * Monitors game states (from Gecko RAM hooks) as read-only telemetry and manages player roles.
  */
 enum class NetplayAuthority {
     LOCAL_ONLY,       // Single-player / standard local connection
-    PITCHER_CONTROL,  // Pitching team holds local 0ms authority (Obsolete)
-    BATTER_CONTROL    // Batting/Fielding team holds local 0ms authority (Obsolete)
+    PITCHER_CONTROL,  // Pitching team (defense, buffered latency input)
+    BATTER_CONTROL    // Batting/Fielding team (offense, 0ms latency input)
 };
 
 class HostAuthorityManager {
@@ -102,20 +104,24 @@ public:
     HostAuthorityManager();
     
     // Updates local authority state based on RAM state register (Gecko Hooks)
+    // 0x01 = Pitcher/Defense, 0x02 = Batter/Offense
     void UpdateStateFromMemoryRegister(uint8_t memory_reg_val);
     
-    // Returns true if this instance should immediately execute local inputs (Always returns false in hybrid deterministic netplay)
-    bool HasLocalAuthority() const { return false; }
+    // Returns true if this client represents the offense (0ms local delay)
+    bool HasLocalAuthority() const { return m_is_offense_team; }
     
     // Returns current authority type
-    NetplayAuthority GetAuthorityMode() const { return NetplayAuthority::LOCAL_ONLY; }
+    NetplayAuthority GetAuthorityMode() const { 
+        return m_is_offense_team ? NetplayAuthority::BATTER_CONTROL : NetplayAuthority::PITCHER_CONTROL; 
+    }
     
     // Set whether this client represents the offensive team (batting/running)
     void SetTeamRole(bool is_offense) { m_is_offense_team = is_offense; }
+    bool IsOffenseTeam() const { return m_is_offense_team; }
 
 private:
     NetplayAuthority m_mode;
-    bool m_is_offense_team; // True if this client is batting/running
+    bool m_is_offense_team; // True if this client is batting/running (Offense)
 };
 
 /**
@@ -144,6 +150,10 @@ public:
     // Returns true if the receiver listener is active
     bool IsActive() const { return m_running; }
 
+    // Slot configuration for Netplay to prevent controller hijacking
+    void SetLocalPlayerSlot(int slot) { m_local_player_slot = slot; }
+    int GetLocalPlayerSlot() const { return m_local_player_slot; }
+
 private:
     NetplayInputReceiver();
     ~NetplayInputReceiver();
@@ -163,4 +173,10 @@ private:
     uint64_t m_ghost_click_start_us;
     float m_frozen_ir_pointer[2];
     uint16_t m_last_buttons_state;
+    int m_local_player_slot; // 0 = Player 1, 1 = Player 2, etc.
+
+    // Sender validation to prevent remote spoofing/hijacking
+    bool m_sender_locked;
+    uint32_t m_locked_ip;
+    uint16_t m_locked_port;
 };

@@ -9,7 +9,9 @@ extracted_game/
 extracted_game/files/dt_na.dat
 
 # Tools and Local Binaries
-tools/
+tools/*
+!tools/udp_spoofer.py
+!tools/desync_catcher.py
 *.tar.gz
 *.zip
 
@@ -48,3 +50,9 @@ dolphin-src/
 # Local state / temporary files
 last_ip.txt
 scoreboard_dump.txt
+
+# Diagnostic Test Binaries
+dolphin/dolphin_test
+dolphin/integration_test
+dolphin/stress_test
+proxy/SluggersProxy
