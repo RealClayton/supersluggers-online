@@ -134,6 +134,12 @@ Real-time memory auditing tool to capture emulation desynchronizations:
 *   Queries Wii `MEM1` memory (`0x80000000` to `0x817FFFFF`) using POSIX shared memory (macOS/Linux) or Win32 File Mapping (Windows).
 *   Runs a server-client framework over TCP to hash and compare memory state across peer instances frame-by-frame. Instantly terminates emulators if a desync is detected.
 
+### 7. Local Desk Setup Test Suite (`tools/desk_setup_test.py`)
+Automator for dual side-by-side local testing:
+*   Generates isolated host/client directories (`dolphin-host/` and `dolphin-client/`) with `portable.txt` in a local scratch directory (`local_test_suite/`).
+*   Pre-configures host/client connection IP, ports, nickname variables, and maps local player slots (P1 vs P2) automatically.
+*   Spawns two emulator processes concurrently with arguments pointing to their isolated user setups, enabling local testing on a single PC.
+
 ---
 
 
