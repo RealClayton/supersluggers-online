@@ -114,9 +114,9 @@ class DolphinMemoryReader:
             return 0
         # If in Mock, it is at index 0
         if self.use_mock:
-            return struct.unpack_into("<I", data, 0)[0]
+            return struct.unpack_from("<I", data, 0)[0]
         # In a real game, frame counter address must be determined. We read from start for now.
-        return struct.unpack_into("<I", data, 0)[0]
+        return struct.unpack_from("<I", data, 0)[0]
 
     def close(self):
         if self.use_mock:
