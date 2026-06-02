@@ -52,7 +52,7 @@ graph TD
 ## 2. Core Subsystems
 
 ### 2.1 High-Frequency C++ Bluetooth Proxy (`SluggersProxy`)
-Located in [`proxy/`](file:///Volumes/Clay%20X10/02%20-%20Coding%20Projects/supersluggers-online/proxy), this background daemon connects to the physical Wii Remote (Vendor ID: `0x057e`, Product ID: `0x0306`) and polls reports at **1000Hz (1ms intervals)**.
+Located in [`proxy/`](./proxy), this background daemon connects to the physical Wii Remote (Vendor ID: `0x057e`, Product ID: `0x0306`) and polls reports at **1000Hz (1ms intervals)**.
 
 *   **High-Precision Scheduling:** Combines standard OS thread sleeps with Arm/x86 assembly spinlocks (`yield` / `pause`) to maintain strict sub-millisecond timer resolution.
 *   **Dual Compilation Modes:** Fully compiles with active `hidapi` bindings for physical hardware, or falls back to an integrated sinusoidal **Mock Physics Simulation Engine** for hardware-free development.
@@ -71,7 +71,7 @@ Located in [`proxy/`](file:///Volumes/Clay%20X10/02%20-%20Coding%20Projects/supe
     ```
 
 ### 2.2 Custom Dolphin Emulator Fork
-Located in [`dolphin/`](file:///Volumes/Clay%20X10/02%20-%20Coding%20Projects/supersluggers-online/dolphin), the custom C++ emulator fork incorporates input injection, adaptive buffer math, and memory state synchronizations.
+Located in [`dolphin/`](./dolphin), the custom C++ emulator fork incorporates input injection, adaptive buffer math, and memory state synchronizations.
 
 #### 1. Input Injection Hook
 Intercepts Dolphin's hardware emulation polling thread inside `WiimoteEmu.cpp` and injects raw proxy structures, completely bypassing standard operating system device mapping lags.
@@ -110,13 +110,13 @@ Hit Detected (Gecko hook writes 0x02 to 0x80002F00):
 2.  **Contact/Fielding Phase (`0x02`):** Instantly triggered when the bat strikes the ball. Authority shifts to the offensive team, allowing the batter to run and field with 0ms response time while the pitcher buffers.
 
 ### 2.3 Tauri Desktop Launcher
-Located in [`launcher/`](file:///Volumes/Clay%20X10/02%20-%20Coding%20Projects/supersluggers-online/launcher), the desktop shell provides user configurations and manages low-level subprocesses.
+Located in [`launcher/`](./launcher), the desktop shell provides user configurations and manages low-level subprocesses.
 
 *   **Settings Isolation:** Automatically places an empty `portable.txt` in the custom Dolphin directory to isolate netplay configurations from the host's global setups. Writes a customized low-latency `Dolphin.ini` forcing Vulkan rendering, connective netplay ports (`5556`), and chunked codes.
 *   **Lifecycle Daemon:** When you click **Inject & Launch Playball**, the Rust backend spawns `SluggersProxy` in the background and runs Dolphin directly into the ISO. A background thread polls Dolphin's status every 500ms; the moment you exit the game window, Rust kills the background C++ proxy automatically to leave the host system completely clean.
 
 ### 2.4 Gecko Memory Hook Subsystem
-Located in [`gecko/`](file:///Volumes/Clay%20X10/02%20-%20Coding%20Projects/supersluggers-online/gecko), this defines the assembly hook locations in Wii `MEM1` RAM (`0x80000000` to `0x817FFFFF`) that detect gameplay phase transitions.
+Located in [`gecko/`](./gecko), this defines the assembly hook locations in Wii `MEM1` RAM (`0x80000000` to `0x817FFFFF`) that detect gameplay phase transitions.
 
 *   **Hook A: Pitcher Wind-Up Hook:** Captures the starting frame of the pitcher's wind-up animation to trigger Defensive Authority.
 *   **Hook B: Batter Swing Hook:** Bypasses standard Bluetooth latency thresholds by scanning analog swing acceleration floats directly in memory.
@@ -143,13 +143,13 @@ You can compile and run automated diagnostics on the C++ Bluetooth Proxy locally
     clang++ -std=c++17 -O3 -Wall -pthread src/main.cpp -o SluggersProxy
     ```
 2.  **Run Automated Timing and Packet Diagnostics:**
-    The root directory contains an automated python suite [`verify_proxy.py`](file:///Volumes/Clay%20X10/02%20-%20Coding%20Projects/supersluggers-online/verify_proxy.py) that spins up the proxy daemon, binds local UDP sockets, records 3,000 frames, conducts timing and jitter analyses, and generates a formal report:
+    The root directory contains an automated python suite [`verify_proxy.py`](./verify_proxy.py) that spins up the proxy daemon, binds local UDP sockets, records 3,000 frames, conducts timing and jitter analyses, and generates a formal report:
     ```bash
     python verify_proxy.py
     ```
 
 > [!TIP]
-> View [`proxy_validation_report.md`](file:///Volumes/Clay%20X10/02%20-%20Coding%20Projects/supersluggers-online/proxy_validation_report.md) in the workspace root to check compliance bounds. The high-precision thread spinlock routinely locks loop intervals to **1000 Hz with less than 15 us of standard deviation jitter**.
+> View [`proxy_validation_report.md`](./proxy_validation_report.md) in the workspace root to check compliance bounds. The high-precision thread spinlock routinely locks loop intervals to **1000 Hz with less than 15 us of standard deviation jitter**.
 
 ### 3.3 Running the Tauri Launcher
 To spin up the native dashboard in developer mode:
@@ -179,11 +179,38 @@ cmake --build build -j$(nproc)
 
 ---
 
+## 3.5 Recent Core Integrations & Automation Tools (Latest Updates)
+
+To simplify developer workflow and enhance cross-play reliability, several key updates and integrations have been implemented:
+
+### 1. Symmetric Real Wiimote Launcher (`playball.ps1` & `playball.bat`)
+A new automation framework that handles the entire startup pipeline:
+*   **Zero-Proxy Execution:** Automatically configures standalone Dolphin to use native Real Wiimotes (directly via Bluetooth or Mayflash DolphinBar in Mode 4) combined with low-latency dynamic `GameStateSync` settings.
+*   **Role Symmetric Configuration:** Writes a custom, runtime-isolated `WiimoteNew.ini` and `Dolphin.ini` on startup, automatically mapping the local player to the active controller slot based on their role (`Host` or `Client`).
+*   **Low-Latency P2P Handshake:** Implements a UDP-based handshake protocol on port `5558` to synchronize the game startup, guaranteeing that both clients launch the WBFS ROM simultaneously.
+
+### 2. Multi-Platform Release Packager (`package_release.ps1` & `package_release.bat`)
+An automated release packaging system that packages the entire Netplay ecosystem for production:
+*   Compiles `SluggersProxy` (using optimized C++17 flags) and bundles custom Dolphin binaries.
+*   Automates directory structures, portable isolation flags (`portable.txt`), configuration files, custom Gecko cheat codes, and release metadata.
+*   Outputs compressed ZIP files under the project root (`supersluggers-netplay-release.zip`), ready for deployment.
+
+### 3. High-Performance UDP Relay Server (`relay_server.py`)
+To handle environments where direct P2P connections are restricted by symmetric NATs:
+*   A standalone, low-overhead UDP relay service designed for microsecond-level packet forwarding.
+*   Forwards incoming client sync and netplay packets seamlessly to ensure reliable WAN connectivity regardless of firewall restrictions.
+
+### 4. Build Targets & Isolated CMake Configurations
+*   **`dolphin/CMakeLists.txt`**: Added a modular build specification to isolate testing of the custom Netplay emulator extension.
+*   **`proxy/CMakeLists.txt`**: Overhauled proxy build configurations, allowing developers to target optimized compilation modes with or without `hidapi` hardware hooks.
+
+---
+
 ## 4. Progress Tracker & Roadmap
 
 *   [x] **Setup Workspace Environment:** Acquisition and verification of `RMBE01` (NTSC-USA) WBFS image.
 *   [x] **Deploy Extract Tools:** Apple Silicon code signing bypassed for `wit` compiler (v3.05a).
-*   [x] **Partition Asset Extraction:** Completed. Game partitions fully decompiled, [main.dol](file:///Volumes/Clay%20X10/02%20-%20Coding%20Projects/supersluggers-online/extracted_game/sys/main.dol) extracted.
+*   [x] **Partition Asset Extraction:** Completed. Game partitions fully decompiled, [main.dol](./extracted_game/sys/main.dol) extracted.
 *   [x] **Phase 2 (Proxy Development):** C++ high-frequency proxy completed, mock simulators integrated, and HIDAPI compilation models supported.
 *   [x] **Phase 3 (Dolphin Customizations):** Input injection socket listeners and adaptive Hermite/LERP jitter buffers verified.
 *   [x] **Phase 4 (Automated Launcher):** Tauri-based isolated settings and multi-process lifecycle monitors completed.
