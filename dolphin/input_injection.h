@@ -53,6 +53,9 @@ public:
     // Pulls the interpolated input state for the current emulation frame
     EmulatedWiimoteState PullState(uint64_t current_time_us);
 
+    // Pulls the latest unbuffered raw report for 0ms visual prediction rendering
+    ProxyInputReport GetLatestRawReport() const;
+
     // Clear the buffer queue on game reset/load
     void Reset();
 
@@ -60,11 +63,11 @@ public:
     uint32_t GetDroppedPacketCount() const { return m_dropped_packets; }
     uint32_t GetOutOfOrderCount() const { return m_out_of_order_packets; }
 
-    // Allows the HostAuthorityManager to bypass jitter delay for 0ms local inputs
-    void SetAuthorityBypass(bool bypass) { m_authority_bypass = bypass; }
+    // Allows the HostAuthorityManager to bypass jitter delay (DEPRECATED - Locked to false in deterministic model)
+    void SetAuthorityBypass(bool bypass) { m_authority_bypass = false; }
 
 private:
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
     std::vector<ProxyInputReport> m_queue;
     bool m_authority_bypass;
     
@@ -85,13 +88,13 @@ private:
 };
 
 /**
- * Dynamic Host Authority Manager
+ * Dynamic Host Authority Manager (DEPRECATED - Retained as legacy stub)
  * Monitors game states (from Gecko RAM hooks) and negotiates input ownership.
  */
 enum class NetplayAuthority {
     LOCAL_ONLY,       // Single-player / standard local connection
-    PITCHER_CONTROL,  // Pitching team holds local 0ms authority
-    BATTER_CONTROL    // Batting/Fielding team holds local 0ms authority
+    PITCHER_CONTROL,  // Pitching team holds local 0ms authority (Obsolete)
+    BATTER_CONTROL    // Batting/Fielding team holds local 0ms authority (Obsolete)
 };
 
 class HostAuthorityManager {
@@ -101,11 +104,11 @@ public:
     // Updates local authority state based on RAM state register (Gecko Hooks)
     void UpdateStateFromMemoryRegister(uint8_t memory_reg_val);
     
-    // Returns true if this instance should immediately execute local inputs (0ms delay)
-    bool HasLocalAuthority() const;
+    // Returns true if this instance should immediately execute local inputs (Always returns false in hybrid deterministic netplay)
+    bool HasLocalAuthority() const { return false; }
     
     // Returns current authority type
-    NetplayAuthority GetAuthorityMode() const { return m_mode; }
+    NetplayAuthority GetAuthorityMode() const { return NetplayAuthority::LOCAL_ONLY; }
     
     // Set whether this client represents the offensive team (batting/running)
     void SetTeamRole(bool is_offense) { m_is_offense_team = is_offense; }
@@ -129,6 +132,9 @@ public:
     // Invoked by Dolphin's emulated Wiimote polling tick (Core/HW/Wiimote.cpp)
     EmulatedWiimoteState GetEmulatedState();
 
+    // Pulls the 0ms Visual Prediction Cursor State with Ghost Click protection
+    EmulatedWiimoteState Get0msLocalCursorState();
+
     // Updates memory register states from Gecko core hooks
     void SyncGeckoState(uint8_t state_reg);
 
@@ -151,4 +157,10 @@ private:
 
     AdaptiveJitterBuffer m_jitter_buffer;
     HostAuthorityManager m_authority_manager;
+
+    // Ghost Click Protection Parameters
+    bool m_ghost_click_active;
+    uint64_t m_ghost_click_start_us;
+    float m_frozen_ir_pointer[2];
+    uint16_t m_last_buttons_state;
 };

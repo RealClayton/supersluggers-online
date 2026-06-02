@@ -35,6 +35,18 @@ void AdaptiveJitterBuffer::Reset() {
     std::memset(&m_second_last_report, 0, sizeof(ProxyInputReport));
 }
 
+ProxyInputReport AdaptiveJitterBuffer::GetLatestRawReport() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_queue.empty()) {
+        ProxyInputReport empty_report;
+        std::memset(&empty_report, 0, sizeof(ProxyInputReport));
+        empty_report.ir_pointer[0] = 512;
+        empty_report.ir_pointer[1] = 512;
+        return empty_report;
+    }
+    return m_queue.back();
+}
+
 void AdaptiveJitterBuffer::PushReport(const ProxyInputReport& report) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -230,7 +242,7 @@ EmulatedWiimoteState AdaptiveJitterBuffer::PullState(uint64_t current_time_us) {
 }
 
 // ============================================================================
-// HostAuthorityManager Implementation
+// HostAuthorityManager Implementation (DEPRECATED - Retained as legacy stub)
 // ============================================================================
 
 HostAuthorityManager::HostAuthorityManager() {
@@ -239,30 +251,7 @@ HostAuthorityManager::HostAuthorityManager() {
 }
 
 void HostAuthorityManager::UpdateStateFromMemoryRegister(uint8_t memory_reg_val) {
-    // 0x01 -> Pitcher holds authority. Offense client yields control.
-    // 0x02 -> Batter/Fielder holds authority. Defense client yields control.
-    if (memory_reg_val == 0x01) {
-        m_mode = NetplayAuthority::PITCHER_CONTROL;
-    } else if (memory_reg_val == 0x02) {
-        m_mode = NetplayAuthority::BATTER_CONTROL;
-    } else {
-        m_mode = NetplayAuthority::LOCAL_ONLY;
-    }
-}
-
-bool HostAuthorityManager::HasLocalAuthority() const {
-    if (m_mode == NetplayAuthority::LOCAL_ONLY) {
-        return true;
-    }
-    if (m_mode == NetplayAuthority::PITCHER_CONTROL) {
-        // If we are defending (pitching), we have 0ms instant authority
-        return !m_is_offense_team;
-    }
-    if (m_mode == NetplayAuthority::BATTER_CONTROL) {
-        // If offense (batting/fielding), we have 0ms instant authority
-        return m_is_offense_team;
-    }
-    return true;
+    m_mode = NetplayAuthority::LOCAL_ONLY;
 }
 
 // ============================================================================
@@ -274,7 +263,16 @@ NetplayInputReceiver& NetplayInputReceiver::GetInstance() {
     return instance;
 }
 
-NetplayInputReceiver::NetplayInputReceiver() : m_running(false), m_port(5555), m_socket(INVALID_SOCKET) {}
+NetplayInputReceiver::NetplayInputReceiver()
+    : m_running(false),
+      m_port(5555),
+      m_socket(INVALID_SOCKET),
+      m_ghost_click_active(false),
+      m_ghost_click_start_us(0),
+      m_last_buttons_state(0) {
+    m_frozen_ir_pointer[0] = 0.5f;
+    m_frozen_ir_pointer[1] = 0.5f;
+}
 
 NetplayInputReceiver::~NetplayInputReceiver() {
     Stop();
@@ -356,17 +354,69 @@ EmulatedWiimoteState NetplayInputReceiver::GetEmulatedState() {
     uint64_t current_time = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now().time_since_epoch()).count();
         
-    // Apply local authority bypass if we own this state frame (0ms latency!)
-    m_jitter_buffer.SetAuthorityBypass(m_authority_manager.HasLocalAuthority());
+    // Always use standard, jitter-buffered deterministic delay in hybrid netplay model
+    m_jitter_buffer.SetAuthorityBypass(false);
         
     // Retrieve the jitter-buffered and interpolated controller input
     return m_jitter_buffer.PullState(current_time);
 }
 
+EmulatedWiimoteState NetplayInputReceiver::Get0msLocalCursorState() {
+    uint64_t current_time_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+        
+    ProxyInputReport latest = m_jitter_buffer.GetLatestRawReport();
+    EmulatedWiimoteState state;
+    std::memset(&state, 0, sizeof(EmulatedWiimoteState));
+    
+    state.buttons = latest.buttons;
+    for (int i = 0; i < 3; ++i) {
+        state.accel[i] = (latest.accel[i] - 512.0f) / 102.0f;
+        state.gyro[i] = latest.gyro[i] / 8192.0f;
+    }
+
+    float raw_ir_x = latest.ir_pointer[0] / 1023.0f;
+    float raw_ir_y = latest.ir_pointer[1] / 1023.0f;
+
+    // Detect Click Transition (Button A: 0x0800, Button B: 0x0400)
+    uint16_t click_mask = 0x0C00; 
+    uint16_t current_clicks = latest.buttons & click_mask;
+    uint16_t last_clicks = m_last_buttons_state & click_mask;
+    
+    // If a click has occurred (released -> pressed transition)
+    if (current_clicks && (current_clicks != last_clicks)) {
+        if (!m_ghost_click_active) {
+            m_ghost_click_active = true;
+            m_ghost_click_start_us = current_time_us;
+            m_frozen_ir_pointer[0] = raw_ir_x;
+            m_frozen_ir_pointer[1] = raw_ir_y;
+        }
+    }
+    
+    m_last_buttons_state = latest.buttons;
+
+    // Verify if the ghost click freeze duration (50ms) has elapsed
+    if (m_ghost_click_active) {
+        if (current_time_us - m_ghost_click_start_us >= 50000) {
+            m_ghost_click_active = false;
+        }
+    }
+
+    if (m_ghost_click_active) {
+        state.ir_pointer[0] = m_frozen_ir_pointer[0];
+        state.ir_pointer[1] = m_frozen_ir_pointer[1];
+    } else {
+        state.ir_pointer[0] = raw_ir_x;
+        state.ir_pointer[1] = raw_ir_y;
+    }
+
+    return state;
+}
+
 void NetplayInputReceiver::SyncGeckoState(uint8_t state_reg) {
-    m_authority_manager.UpdateStateFromMemoryRegister(state_reg);
+    // Stub - State synchronization verified dynamically under the hybrid model
 }
 
 void NetplayInputReceiver::SetClientRole(bool is_offense) {
-    m_authority_manager.SetTeamRole(is_offense);
+    // Stub
 }
