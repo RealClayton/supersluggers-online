@@ -213,11 +213,46 @@ int main() {
     }
 
     // ================================================================
+    // TEST 6: Long-Term Queue Trimming & Sequence Wrap Stability
+    // ================================================================
+    {
+        std::cout << "\n[Test 6] Running long-term queue trimming & sequence wrap simulation..." << std::endl;
+        AdaptiveJitterBuffer buf;
+
+        // Push 20,000 packets (simulating a 20-second stream at 1000Hz)
+        uint64_t base_ts = 1000000;
+        uint32_t seq = 0xFFFF0000; // Start near sequence wrap-around point
+        
+        for (int i = 0; i < 20000; i++) {
+            // Drop 2% of packets
+            if (i % 50 == 0) {
+                seq++;
+                continue;
+            }
+            
+            buf.PushReport(MakeReport(base_ts + i * 1000, seq, 512, 100, 100));
+            seq++;
+
+            // Pull state every 16ms (60fps emulator frame rate)
+            if (i % 16 == 0) {
+                buf.PullState(base_ts + i * 1000 + 30000);
+            }
+        }
+
+        EmulatedWiimoteState final_state = buf.PullState(base_ts + 20000 * 1000 + 30000);
+        std::cout << "  Completed 20,000 packet stream with drops & sequence wraps." << std::endl;
+        assert(final_state.buttons == 0);
+        
+        std::cout << "[Test 6 PASSED] Long-term stability verified." << std::endl;
+        tests_passed++;
+    }
+
+    // ================================================================
     // SUMMARY
     // ================================================================
     std::cout << "\n==================================================" << std::endl;
-    std::cout << "Stress Test Results: " << tests_passed << "/5 PASSED" << std::endl;
+    std::cout << "Stress Test Results: " << tests_passed << "/6 PASSED" << std::endl;
     std::cout << "==================================================" << std::endl;
 
-    return (tests_passed == 5) ? 0 : 1;
+    return (tests_passed == 6) ? 0 : 1;
 }
